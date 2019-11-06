@@ -159,7 +159,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
     return init_net(net, init_type, init_gain, gpu_ids)
 
 
-def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal', init_gain=0.02, gpu_ids=[]):
+def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal', init_gain=0.02, gpu_ids=[], num_class = 1):
     """Create a discriminator
 
     Parameters:
@@ -198,6 +198,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer)
     elif netD == 'pixel':     # classify if each pixel is real or fake
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
+    elif netD == 'semantic':     # classify if each pixel is real or fake
+        net = NLayerDiscriminator(input_nc,ndf,n_layers_D, norm_layer=norm_layer, output_nc = num_class)
     else:
         raise NotImplementedError('Discriminator model name [%s] is not recognized' % netD)
     return init_net(net, init_type, init_gain, gpu_ids)
@@ -206,6 +208,60 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
 ##############################################################################
 # Classes
 ##############################################################################
+
+
+
+
+
+
+class WMSELoss(nn.Module):
+
+    def __init__(self):
+        super(WMSELoss, self).__init__()
+
+    def forward(self, ori_image, target_image, weight, loss_weight = None):
+        
+        ### adaptive weights   This is not used for this task. (pix2pix)
+        if type(loss_weight) != type(None):
+            self.loss = torch.sum(1/(2*loss_weight**2) * weight * (ori_image - target_image) ** 2) / ((ori_image.shape[0]) * (ori_image.shape[1]) * (ori_image.shape[2]) * (ori_image.shape[3])) +  (1/19) * torch.sum(torch.log(loss_weight))
+        else:
+            self.loss = torch.sum(weight * (ori_image - target_image)**2) / ((ori_image.shape[0]) * (ori_image.shape[1]) *\
+                                                                             (ori_image.shape[2]) * (ori_image.shape[3]))
+        return self.loss
+    
+class OldganLoss(nn.Module):
+    def __init__(self, use_lsgan=True, target_real_label=1.0, target_fake_label=0.0,wmse = False):
+        super(OldganLoss, self).__init__()
+        self.wmse = wmse
+        self.register_buffer('real_label', torch.tensor(target_real_label))
+        self.register_buffer('fake_label', torch.tensor(target_fake_label))
+        if use_lsgan:
+            if wmse:
+                self.loss = WMSELoss()
+            else:
+                self.loss = nn.MSELoss()
+        else:
+            self.loss = nn.BCELoss()
+
+    def get_target_tensor(self, input, target_is_real):
+        if target_is_real:
+            target_tensor = self.real_label
+        else:
+            target_tensor = self.fake_label
+        return target_tensor.expand_as(input)
+
+    def __call__(self, input, target_is_real, weight = None,loss_weight = None, type_ = 'normal'):
+        
+        target_tensor = self.get_target_tensor(input, target_is_real)
+            
+        if self.wmse:
+            loss = self.loss(input, target_tensor, weight,loss_weight =loss_weight )
+        else:
+            loss = self.loss(input, target_tensor)
+            
+        return loss
+    
+
 class GANLoss(nn.Module):
     """Define different GAN objectives.
 
@@ -538,7 +594,7 @@ class UnetSkipConnectionBlock(nn.Module):
 class NLayerDiscriminator(nn.Module):
     """Defines a PatchGAN discriminator"""
 
-    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d):
+    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d, output_nc=1):
         """Construct a PatchGAN discriminator
 
         Parameters:
@@ -575,7 +631,7 @@ class NLayerDiscriminator(nn.Module):
             nn.LeakyReLU(0.2, True)
         ]
 
-        sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
+        sequence += [nn.Conv2d(ndf * nf_mult, output_nc, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
 
     def forward(self, input):
